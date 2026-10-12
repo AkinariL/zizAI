@@ -1,0 +1,10 @@
+[
+  "../shared/shared-memory.js",
+  "mesh-port.js",
+  "tile-data.js",
+  "mesh-canvas.js",
+  "../shared/tile-preprocess.js",
+  "painter.js",
+  "mesh-worker.js",
+  "port-adapter.js"
+]

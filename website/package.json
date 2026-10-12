@@ -1,0 +1,17 @@
+{
+  "name": "zizai-website",
+  "version": "1.0.0",
+  "description": "The ink-wash landing page of Zizai (字在), an input method for typing Chinese and Japanese without switching.",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "build": "node site/build/build.mjs --out site/dist",
+    "build:debug": "node site/build/build.mjs --debug --no-minify --out site/dist-debug",
+    "serve": "node site/build/serve.mjs --root site/dist --port 8791",
+    "format": "prettier --write \"site/src/**/*.{js,css}\" \"site/build/*.mjs\""
+  },
+  "devDependencies": {
+    "terser": "^5.46.1",
+    "prettier": "^3.9.10"
+  }
+}

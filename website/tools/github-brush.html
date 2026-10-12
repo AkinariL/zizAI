@@ -1,0 +1,636 @@
+<!doctype html><meta charset="utf-8"><title>brush study: GitHub button</title><body style="margin:0;background:#dfe7dc"><script>
+const S = 30,
+  W = 132,
+  H = 56,
+  INK = '35,42,38';
+const cv = document.createElement('canvas');
+cv.width = W * S;
+cv.height = H * S;
+const g = cv.getContext('2d');
+let seed = 20261012;
+const rnd = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296,
+  rr = (a, b) => a + (b - a) * rnd();
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x)),
+  smooth = (a, b, x) => {
+    const t = clamp((x - a) / (b - a), 0, 1);
+    return t * t * (3 - 2 * t);
+  };
+function noise1() {
+  const t = Array.from({ length: 256 }, rnd);
+  return x => {
+    const i = Math.floor(x),
+      f = x - i,
+      u = f * f * (3 - 2 * f);
+    return t[i & 255] * (1 - u) + t[(i + 1) & 255] * u;
+  };
+}
+function resample(pts) {
+  const out = [],
+    at = i => pts[clamp(i, 0, pts.length - 1)];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = at(i - 1),
+      b = at(i),
+      c = at(i + 1),
+      d = at(i + 2),
+      n = Math.max(2, Math.ceil(Math.hypot(c.x - b.x, c.y - b.y) / 0.1));
+    for (let k = 0; k < n; k++) {
+      const t = k / n,
+        t2 = t * t,
+        t3 = t2 * t,
+        f = (p, q, r, s) =>
+          0.5 * (2 * q + (r - p) * t + (2 * p - 5 * q + 4 * r - s) * t2 + (3 * q - p - 3 * r + s) * t3);
+      out.push({ x: f(a.x, b.x, c.x, d.x), y: f(a.y, b.y, c.y, d.y), w: Math.max(0.05, f(a.w, b.w, c.w, d.w)) });
+    }
+  }
+  out.push({ ...pts.at(-1) });
+  let s = 0;
+  for (let i = 0; i < out.length; i++) {
+    const p = out[i],
+      q = out[Math.min(i + 1, out.length - 1)],
+      o = out[Math.max(i - 1, 0)],
+      dx = q.x - o.x,
+      dy = q.y - o.y,
+      l = Math.hypot(dx, dy) || 1;
+    if (i) s += Math.hypot(p.x - o.x, p.y - o.y);
+    p.s = s;
+    p.nx = -dy / l;
+    p.ny = dx / l;
+  }
+  return out;
+}
+function pass(P, o, hair) {
+  const L = P.at(-1).s || 1,
+    wmax = Math.max(...P.map(p => p.w)),
+    N = Math.max(4, Math.round((2 * wmax * S) / hair));
+  g.lineCap = 'butt';
+  g.lineJoin = 'round';
+  g.strokeStyle = 'rgb(' + INK + ')';
+  for (let b = 0; b < N; b++) {
+    const u = ((b + rnd()) / N) * 2 - 1,
+      edge = Math.abs(u),
+      gate = noise1(),
+      wob = noise1(),
+      tone = noise1();
+    let ink = o.load * rr(0.72, 1.25) * (1 - 0.18 * edge);
+    const use = (o.dry / L) * rr(0.6, 1.5),
+      a0 = o.alpha * rr(0.55, 1) * (1 + o.rim * smooth(0.72, 1, edge)),
+      lw = ((2 * wmax * S) / N) * rr(1.25, 2.1);
+    let level = -1,
+      open = false;
+    const flush = () => {
+      if (open) {
+        g.stroke();
+        open = false;
+      }
+    };
+    for (let i = 0; i < P.length; i++) {
+      const p = P[i];
+      if (i) ink -= use * (p.s - P[i - 1].s);
+      const wet = clamp(ink / 0.4, 0, 1),
+        cut = 1 - wet,
+        show = wet >= 1 ? 1 : smooth(cut - 0.12, cut + 0.12, gate(p.s * o.grain + b * 17.3));
+      const a = a0 * show * (0.8 + 0.4 * tone(p.s * 0.9 + b * 5.1)) * smooth(0, 0.06, p.w / wmax + 0.02),
+        q = a < 0.012 ? 0 : Math.ceil(a * 14);
+      const off = u * p.w + (wob(p.s * 0.5 + b * 3.7) - 0.5) * 0.05 * p.w,
+        X = (p.x + p.nx * off) * S,
+        Y = (p.y + p.ny * off) * S;
+      if (q !== level) {
+        if (open) {
+          g.lineTo(X, Y);
+          flush();
+        }
+        level = q;
+        if (q) {
+          g.globalAlpha = Math.min(1, q / 14);
+          g.lineWidth = lw * clamp((p.w / wmax) * 1.4, 0.35, 1);
+          g.beginPath();
+          g.moveTo(X, Y);
+          open = true;
+        }
+      } else if (q) g.lineTo(X, Y);
+    }
+    flush();
+  }
+  g.globalAlpha = 1;
+}
+function plan(P, o = {}) {
+  o = { start: 1.1, end: 0.7, turn: 0.9, turnScale: 1.8, hes: 0, lam: 1.3, swell: 0.16, ...o };
+  const L = P.at(-1).s || 1,
+    lam = Math.min(o.lam, L * 0.22),
+    hes = Array.from({ length: o.hes }, () => [rr(0.15, 0.85) * L, rr(0.45, 1)]),
+    ang = q => Math.atan2(-q.nx, q.ny);
+  for (let i = 0; i < P.length; i++) {
+    const p = P[i];
+    let j = i,
+      k = i;
+    while (j > 0 && p.s - P[j].s < 0.6) j--;
+    while (k < P.length - 1 && P[k].s - p.s < 0.6) k++;
+    let da = ang(P[k]) - ang(P[j]);
+    da = Math.abs(Math.atan2(Math.sin(da), Math.cos(da))) / Math.max(0.3, P[k].s - P[j].s);
+    let d =
+      o.start * Math.exp(-p.s / lam) + o.end * Math.exp(-(L - p.s) / lam) + o.turn * Math.min(1, da * o.turnScale);
+    for (const [hs, ha] of hes) d += ha * Math.exp(-(((p.s - hs) / lam) ** 2));
+    p.d = Math.min(2, d);
+  }
+  for (const p of P) p.w *= 1 - o.swell * 0.6 + o.swell * Math.min(1.5, p.d);
+  return P;
+}
+const maskCv = document.createElement('canvas');
+maskCv.width = cv.width;
+maskCv.height = cv.height;
+const m = maskCv.getContext('2d', { willReadFrequently: true });
+const blurCv = document.createElement('canvas');
+blurCv.width = cv.width;
+blurCv.height = cv.height;
+const bx = blurCv.getContext('2d', { willReadFrequently: true });
+function vnoise(x, y) {
+  const xi = Math.floor(x),
+    yi = Math.floor(y),
+    xf = x - xi,
+    yf = y - yi,
+    u = xf * xf * (3 - 2 * xf),
+    v = yf * yf * (3 - 2 * yf);
+  const h = (a, b) => {
+    let n = Math.imul(a, 374761393) + Math.imul(b, 668265263);
+    n = Math.imul(n ^ (n >>> 13), 1274126177);
+    return ((n ^ (n >>> 16)) >>> 0) / 4294967296;
+  };
+  return (h(xi, yi) * (1 - u) + h(xi + 1, yi) * u) * (1 - v) + (h(xi, yi + 1) * (1 - u) + h(xi + 1, yi + 1) * u) * v;
+}
+function body(P, wet, sideAt) {
+  const L = P.at(-1).s || 1,
+    lower = q => clamp((q.nx * 0.45 + q.ny * 0.9) * 4, -1, 1),
+    ink = (q, side) =>
+      'rgb(' +
+      Math.round(255 * clamp(wet(q.s / L), 0, 1)) +
+      ',' +
+      Math.round(127.5 * clamp(q.d || 0, 0, 2)) +
+      ',' +
+      Math.round(127.5 * (1 + side)) +
+      ')';
+  for (let i = 1; i < P.length; i++) {
+    const a = P[i - 1],
+      b = P[Math.min(i + 1, P.length - 1)],
+      side = lower(P[i]);
+    for (const k of [1, -1]) {
+      m.fillStyle = ink(P[i], sideAt ? sideAt(P[i]) : k * side);
+      m.beginPath();
+      m.moveTo(a.x * S, a.y * S);
+      m.lineTo(b.x * S, b.y * S);
+      m.lineTo((b.x + k * b.nx * b.w) * S, (b.y + k * b.ny * b.w) * S);
+      m.lineTo((a.x + k * a.nx * a.w) * S, (a.y + k * a.ny * a.w) * S);
+      m.fill();
+    }
+  }
+  for (const q of [P[0], P.at(-1)]) {
+    m.fillStyle = ink(q, 0);
+    m.beginPath();
+    m.ellipse(q.x * S, q.y * S, q.w * S, q.w * S * 0.6, Math.atan2(q.nx, -q.ny) + 0.6, 0, 6.2832);
+    m.fill();
+  }
+}
+function inkLayer(R, o, box) {
+  const x0 = Math.max(0, Math.floor(box[0] * S)),
+    y0 = Math.max(0, Math.floor(box[1] * S)),
+    w = Math.min(cv.width - x0, Math.ceil(box[2] * S)),
+    h = Math.min(cv.height - y0, Math.ceil(box[3] * S));
+  bx.clearRect(0, 0, cv.width, cv.height);
+  bx.filter = 'blur(' + R * S * 0.5 + 'px)';
+  bx.drawImage(maskCv, 0, 0);
+  bx.filter = 'none';
+  const src = bx.getImageData(x0, y0, w, h).data,
+    out = new ImageData(w, h),
+    d = out.data,
+    [r, gc, bc] = INK.split(',').map(Number);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4,
+        b = src[i + 3] / 255;
+      if (b < 0.02) continue;
+      const X = x0 + x,
+        Y = y0 + y,
+        wet = src[i] / 255,
+        stay = src[i + 1] / 127.5,
+        side = src[i + 2] / 255;
+      const n1 = vnoise(X / (o.wob * S), Y / (o.wob * S)),
+        n2 = vnoise(X / (o.fib * S) + 91, Y / (o.fib * S) + 17),
+        n3 = vnoise(X / (3 * S) + 7, Y / (3 * S) + 3),
+        n4 = vnoise(X / (1.1 * S) + 31, Y / (1.1 * S) + 53);
+      const grain =
+        vnoise(X / (0.24 * S) + 3, Y / (0.24 * S) + 8) * 0.65 + vnoise(X / (0.1 * S) + 13, Y / (0.1 * S) + 5) * 0.35;
+      const core = smooth(0.47, 0.53, b + (n1 - 0.5) * o.wander + (n2 - 0.5) * o.tooth + 0.05 * stay),
+        near = 1 - smooth(0.56, 0.86, b);
+      const band = smooth(0.58, 0.86, side + (n3 - 0.5) * 0.45 + 0.12 * stay) * (0.65 + 0.35 * n4);
+      let tone =
+        o.tone * (0.9 + 0.2 * n3) * wet * (1 + o.pool * stay) +
+        o.band * band * (0.4 + 0.6 * wet) +
+        o.rim * near * (0.4 + 0.6 * wet) +
+        o.blot * smooth(0.6, 0.85, n4) * wet * stay;
+      tone *= 1 - o.grain * (grain - 0.5) * 2;
+      const reach = o.reach * (1 + 0.6 * stay),
+        crept =
+          smooth(0.5 - reach, 0.5, b + (n1 - 0.5) * 0.1) * o.bleed * (1 + 1.2 * stay) +
+          smooth(0.5 - reach, 0.5 - reach * 0.78, b) * (1 - smooth(0.5 - reach * 0.78, 0.5 - reach * 0.5, b)) * o.ring;
+      const a = core * tone + (1 - core) * crept * (0.4 + 0.6 * wet);
+      d[i] = r;
+      d[i + 1] = gc;
+      d[i + 2] = bc;
+      d[i + 3] = Math.round(255 * clamp(a, 0, 1));
+    }
+  const layer = document.createElement('canvas');
+  layer.width = w;
+  layer.height = h;
+  layer.getContext('2d').putImageData(out, 0, 0);
+  g.drawImage(layer, x0, y0);
+  m.clearRect(0, 0, cv.width, cv.height);
+}
+const WET = {
+  wob: 0.7,
+  fib: 0.22,
+  wander: 0.12,
+  tooth: 0.07,
+  reach: 0.28,
+  bleed: 0.09,
+  ring: 0.035,
+  tone: 0.54,
+  band: 0.3,
+  rim: 0.1,
+  pool: 0.35,
+  blot: 0.15,
+  grain: 0.1,
+};
+g.save();
+g.filter = 'blur(' + 0.55 * S + 'px)';
+g.fillStyle = 'rgba(' + INK + ',0.075)';
+g.beginPath();
+g.roundRect(6.5 * S, 8.5 * S, 119 * S, 39 * S, 19.5 * S);
+g.fill();
+g.restore();
+{
+  const r = 21.4,
+    cy = 28,
+    xl = 26,
+    xr = 106,
+    p = [],
+    hand = noise1(),
+    add = (x, y) => p.push({ x, y });
+  add(44.6, cy - r - 0.5);
+  add(43.4, cy - r + 0.2);
+  for (let x = 41; x > xl; x -= 4) add(x, cy - r);
+  for (let a = -90; a >= -270; a -= 12)
+    add(xl + r * Math.cos((a * Math.PI) / 180), cy + r * Math.sin((a * Math.PI) / 180));
+  for (let x = xl + 4; x < xr; x += 4) add(x, cy + r);
+  for (let a = 90; a >= -90; a -= 12)
+    add(xr + r * Math.cos((a * Math.PI) / 180), cy + r * Math.sin((a * Math.PI) / 180));
+  for (let x = xr - 4; x >= 56; x -= 4) add(x, cy - r);
+  p.forEach((q, i) => {
+    const f = i / (p.length - 1);
+    q.y += (hand(f * 26) - 0.5) * 0.7 + (hand(f * 6 + 9) - 0.5) * 0.5;
+    q.x += (hand(f * 26 + 40) - 0.5) * 0.5;
+    q.w =
+      f < 0.03
+        ? 0.35 + 2.3 * Math.pow(f / 0.03, 0.75)
+        : 2.65 - 1.35 * smooth(0.05, 0.82, f) - 0.75 * smooth(0.86, 1, f);
+  });
+  const P = plan(resample(p), { start: 1.2, end: 0.15, turn: 0.85, turnScale: 15, hes: 3, lam: 2.2 });
+  body(P, f => 1 - 0.85 * smooth(0.5, 0.95, f));
+  inkLayer(0.9, WET, [0, 0, W, H]);
+  pass(P, { load: 1.05, dry: 1.0, alpha: 0.17, rim: 0.2, grain: 1.2 }, 2.6);
+}
+{
+  const OCTO =
+      'M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z',
+    mark = new Path2D(OCTO),
+    T = document.createElement('canvas').getContext('2d'),
+    inside = (x, y) => T.isPointInPath(mark, x, y);
+  const k = 30 / 16,
+    ox = 12,
+    oy = 13,
+    hand = noise1(),
+    strokes = [],
+    put = (x, y, w) => ({ x: ox + k * x, y: oy + k * y, w: k * w });
+  const ends = P => {
+    const L = P.at(-1).s || 1;
+    for (const q of P) {
+      const f = q.s / L;
+      q.w *= (0.55 + 0.45 * smooth(0, 0.14, f)) * (1 - 0.4 * smooth(0.8, 1, f));
+    }
+    return P;
+  };
+  {
+    const hw = 0.88,
+      p = [];
+    for (let a = 111; a <= 429; a += 4) {
+      const t = (a * Math.PI) / 180,
+        R = 8 - hw - 0.02 + (hand(a / 23) - 0.5) * 0.2 + (hand(a / 90 + 5) - 0.5) * 0.14;
+      p.push(put(8 + R * Math.cos(t), 8 + R * Math.sin(t), hw * (0.92 + 0.16 * hand(a / 40 + 11))));
+    }
+    strokes.push(plan(resample(p), { start: 1, end: 0.8, turn: 0, hes: 2, lam: 1.6 }));
+  }
+  {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'),
+      el = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    el.setAttribute('d', OCTO);
+    svg.appendChild(el);
+    document.body.appendChild(svg);
+    const TL = el.getTotalLength(),
+      N = 1500,
+      all = Array.from({ length: N }, (_, i) => {
+        const q = el.getPointAtLength((TL * i) / N);
+        return [q.x, q.y];
+      });
+    svg.remove();
+    const cat = all.filter(q => Math.hypot(q[0] - 8, q[1] - 8) < 7.9),
+      hwMax = 0.64,
+      raw = [];
+    for (let i = 2; i < cat.length - 2; i += 2) {
+      const [x, y] = cat[i],
+        tx = cat[i + 2][0] - cat[i - 2][0],
+        ty = cat[i + 2][1] - cat[i - 2][1],
+        l = Math.hypot(tx, ty) || 1;
+      let nx = -ty / l,
+        ny = tx / l;
+      if (!inside(x + nx * 0.1, y + ny * 0.1)) {
+        nx = -nx;
+        ny = -ny;
+        if (!inside(x + nx * 0.1, y + ny * 0.1)) continue;
+      }
+      let room = 0.1;
+      for (let d = 0.1; d <= 1.5; d += 0.05) {
+        if (!inside(x + nx * d, y + ny * d)) break;
+        room = d;
+      }
+      const hw = clamp(Math.min(hwMax, room * 0.5), 0.1, hwMax);
+      raw.push([x + nx * hw, y + ny * hw, hw]);
+    }
+    const p = raw.map((_, i) => {
+      let x = 0,
+        y = 0,
+        w = 0,
+        n = 0;
+      for (let j = Math.max(0, i - 3); j <= Math.min(raw.length - 1, i + 3); j++) {
+        x += raw[j][0];
+        y += raw[j][1];
+        w += raw[j][2];
+        n++;
+      }
+      return put(
+        x / n + (hand(i / 9 + 70) - 0.5) * 0.07,
+        y / n + (hand(i / 9 + 90) - 0.5) * 0.07,
+        (w / n) * (0.94 + 0.12 * hand(i / 14 + 3)),
+      );
+    });
+    strokes.push(
+      plan(resample(p), { start: 0.9, end: 0.7, turn: 0.9, turnScale: 0.75, hes: 0, lam: 0.9, swell: 0.05 }),
+    );
+  }
+  {
+    const hf = 0.62,
+      c = hf * 0.7;
+    for (const R of [5.7, 4.85, 4.0, 3.15]) {
+      let run = [];
+      const a0 = rr(0, 6.28),
+        da = 0.06 / R,
+        close = () => {
+          if (run.length * 0.06 >= 0.9)
+            strokes.push(
+              plan(ends(resample(run.filter((_, i) => i % 3 === 0 || i === run.length - 1))), {
+                start: 0.8,
+                end: 0.6,
+                turn: 0,
+                lam: 0.8,
+              }),
+            );
+          run = [];
+        };
+      for (let a = a0; a < a0 + 6.2832; a += da) {
+        const Rw = R + (hand(a * 3 + R) - 0.5) * 0.16,
+          x = 8 + Rw * Math.cos(a),
+          y = 8 + Rw * Math.sin(a),
+          ux = Math.cos(a),
+          uy = Math.sin(a);
+        if (
+          inside(x, y) &&
+          inside(x + ux * c, y + uy * c) &&
+          inside(x - ux * c, y - uy * c) &&
+          inside(x - uy * c, y + ux * c) &&
+          inside(x + uy * c, y - ux * c)
+        )
+          run.push(put(x, y, hf * (0.9 + 0.2 * hand(a * 2 + R * 7))));
+        else close();
+      }
+      close();
+    }
+  }
+  const mcx = ox + 15,
+    mcy = oy + 15;
+  for (const P of strokes)
+    body(
+      P,
+      () => 1,
+      q => {
+        const dx = q.x - mcx,
+          dy = q.y - mcy;
+        return clamp(((dx * 0.45 + dy * 0.9) / 13) * (0.4 + (dx * dx + dy * dy) / 225), -1, 1);
+      },
+    );
+  inkLayer(
+    0.36,
+    {
+      ...WET,
+      wob: 0.5,
+      fib: 0.16,
+      wander: 0.06,
+      tooth: 0.04,
+      reach: 0.28,
+      bleed: 0.12,
+      tone: 0.58,
+      band: 0.3,
+      pool: 0.28,
+      reach: 0.24,
+    },
+    [ox - 2, oy - 2, 34, 34],
+  );
+  for (const P of strokes) pass(P, { load: 1.1, dry: 0.45, alpha: 0.1, rim: 0, grain: 0.8 }, 2.6);
+  window.__markStrokes = strokes.length;
+}
+{
+  const cap = 17,
+    base = 37.2,
+    hw = 1.18,
+    lean = 0.13,
+    gap = 0.115;
+  let x0 = 46.2;
+  const all = [];
+  const L = {
+    G: [
+      0.78,
+      [
+        [0.7, 0.8, 0.5],
+        [0.54, 0.98, 0.95],
+        [0.28, 0.93, 1.1],
+        [0.09, 0.64, 1.15],
+        [0.1, 0.3, 1.1],
+        [0.29, 0.05, 1.05],
+        [0.55, 0.03, 1],
+        [0.72, 0.2, 0.95],
+        [0.745, 0.45, 0.85],
+      ],
+      [
+        [0.45, 0.455, 0.75],
+        [0.62, 0.47, 0.9],
+        [0.83, 0.465, 0.6],
+      ],
+    ],
+    i: [
+      0.22,
+      [
+        [0.09, 0.93, 0.95],
+        [0.15, 0.85, 0.5],
+      ],
+      [
+        [0.05, 0.57, 0.5],
+        [0.11, 0.63, 1],
+        [0.11, 0.22, 1],
+        [0.14, 0.03, 0.9],
+        [0.25, 0.07, 0.3],
+      ],
+    ],
+    t: [
+      0.42,
+      [
+        [0.15, 0.9, 0.55],
+        [0.16, 0.78, 1],
+        [0.16, 0.3, 1],
+        [0.2, 0.07, 1],
+        [0.32, 0.0, 0.8],
+        [0.45, 0.09, 0.3],
+      ],
+      [
+        [-0.02, 0.61, 0.45],
+        [0.2, 0.63, 0.9],
+        [0.42, 0.65, 0.55],
+      ],
+    ],
+    H: [
+      0.74,
+      [
+        [0.095, 1.0, 0.7],
+        [0.1, 0.88, 1.05],
+        [0.1, 0.3, 1],
+        [0.1, 0.0, 0.85],
+      ],
+      [
+        [0.655, 1.0, 0.7],
+        [0.66, 0.88, 1.05],
+        [0.66, 0.3, 1],
+        [0.665, 0.0, 0.85],
+      ],
+      [
+        [0.1, 0.5, 0.7],
+        [0.38, 0.52, 0.9],
+        [0.66, 0.535, 0.7],
+      ],
+    ],
+    u: [
+      0.58,
+      [
+        [0.075, 0.62, 0.7],
+        [0.08, 0.54, 1],
+        [0.08, 0.24, 1],
+        [0.16, 0.05, 1],
+        [0.3, 0.02, 0.9],
+        [0.42, 0.14, 0.8],
+        [0.465, 0.32, 0.6],
+      ],
+      [
+        [0.465, 0.62, 0.7],
+        [0.47, 0.54, 1],
+        [0.47, 0.16, 1],
+        [0.52, 0.02, 0.8],
+        [0.62, 0.07, 0.3],
+      ],
+    ],
+    b: [
+      0.58,
+      [
+        [0.075, 1.0, 0.7],
+        [0.08, 0.88, 1.05],
+        [0.08, 0.4, 1],
+        [0.08, 0.02, 0.85],
+      ],
+      [
+        [0.08, 0.4, 0.5],
+        [0.2, 0.58, 0.9],
+        [0.38, 0.62, 1],
+        [0.52, 0.47, 1.05],
+        [0.54, 0.26, 1],
+        [0.42, 0.07, 0.95],
+        [0.24, 0.0, 0.9],
+        [0.08, 0.07, 0.55],
+      ],
+    ],
+  };
+  for (const ch of 'GitHub') {
+    const [adv, ...strokes] = L[ch];
+    for (const st of strokes) {
+      const press = noise1(),
+        P = resample(
+          st.map(([x, y, w]) => ({
+            x: x0 + (x + rr(-0.012, 0.012) + y * lean) * cap,
+            y: base - (y + rr(-0.012, 0.012)) * cap,
+            w: hw * w,
+          })),
+        );
+      const len = P.at(-1).s || 1;
+      for (const q of P) {
+        const f = q.s / len;
+        q.w *= (0.5 + 0.5 * smooth(0, 0.12, f)) * (1 - 0.5 * smooth(0.78, 1, f)) * (0.86 + 0.3 * press(f * 3.5));
+      }
+      plan(P, { start: 1.2, end: 0.75, turn: 0.8, turnScale: 1.7, lam: 1.1 });
+      all.push(P);
+      body(P, f => 1 - 0.5 * smooth(0.55, 1, f));
+    }
+    x0 += (adv + gap) * cap;
+  }
+  inkLayer(0.55, { ...WET, wob: 0.55, fib: 0.18, wander: 0.1, tooth: 0.06, tone: 0.56, band: 0.28 }, [44, 16, 76, 26]);
+  for (const P of all) pass(P, { load: 1, dry: rr(0.6, 0.85), alpha: 0.13, rim: 0.1, grain: 1.5 }, 2.6);
+}
+function shrink(src, w, h) {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const x = c.getContext('2d');
+  x.imageSmoothingQuality = 'high';
+  x.drawImage(src, 0, 0, w, h);
+  return c;
+}
+const half = shrink(cv, W * 15, H * 15),
+  tenth = shrink(half, W * 7.5, H * 7.5),
+  out = shrink(tenth, W * 4, H * 4);
+window.__webp = out.toDataURL('image/webp', 0.92);
+function onPaper(src, w, h, paper) {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const x = c.getContext('2d');
+  x.fillStyle = paper;
+  x.fillRect(0, 0, w, h);
+  x.imageSmoothingQuality = 'high';
+  x.drawImage(src, 0, 0, w, h);
+  return c;
+}
+const sheet = document.createElement('canvas');
+sheet.width = 1340;
+sheet.height = 560 + 240;
+const sx = sheet.getContext('2d');
+sx.fillStyle = '#fff';
+sx.fillRect(0, 0, 1340, 800);
+sx.drawImage(onPaper(half, 1320, 560, '#dfe7dc'), 10, 0);
+sx.drawImage(onPaper(out, 264, 112, '#dfe7dc'), 10, 580);
+sx.drawImage(onPaper(out, 264, 112, '#f1e4e6'), 290, 580);
+sx.drawImage(onPaper(out, 132, 56, '#dfe7dc'), 580, 580);
+sx.drawImage(onPaper(out, 132, 56, '#f1e4e6'), 730, 580);
+window.__preview = sheet.toDataURL('image/jpeg', 0.86);
+window.__done = true;
+</script>
